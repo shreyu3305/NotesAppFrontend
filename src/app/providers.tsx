@@ -1,8 +1,7 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { observer } from 'mobx-react-lite';
 import { StoreProvider } from '../hooks/useStore';
 import { rootStore } from '../stores/rootStore';
-import { Spinner } from '../components/common/Spinner';
 
 interface ProvidersProps {
   children: React.ReactNode;
