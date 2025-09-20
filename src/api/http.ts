@@ -47,6 +47,13 @@ const handleResponse = async (response: Response, originalRequest?: RequestInit)
       }
     };
   }
+  
+  // Handle 204 No Content responses (like DELETE)
+  if (response.status === 204) {
+    return null;
+  }
+  
+  // Parse JSON for other successful responses
   return response.json();
 };
 

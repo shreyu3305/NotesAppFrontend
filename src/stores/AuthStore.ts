@@ -1,4 +1,4 @@
-import { makeAutoObservable } from 'mobx';
+import { makeAutoObservable, action } from 'mobx';
 import { User } from '../shared/schemas';
 import { authApi } from '../api/authApi';
 import { RootStore } from './rootStore';
@@ -15,7 +15,7 @@ export class AuthStore {
   /**
    * Login with email and password
    */
-  async login(email: string, password: string) {
+  login = action(async (email: string, password: string) => {
     try {
       this.status = 'loading';
       this.error = null;
@@ -28,15 +28,15 @@ export class AuthStore {
     } catch (error: any) {
       this.status = 'error';
       this.error = error.response?.data?.error?.message || 'Login failed';
-      this.rootStore.ui.showToast('error', 'Login failed', this.error);
+      this.rootStore.ui.showToast('error', 'Login failed', this.error || 'Login failed');
       throw error;
     }
-  }
+  });
 
   /**
    * Sign up new user
    */
-  async signup(name: string, email: string, password: string) {
+  signup = action(async (name: string, email: string, password: string) => {
     try {
       this.status = 'loading';
       this.error = null;
@@ -49,15 +49,15 @@ export class AuthStore {
     } catch (error: any) {
       this.status = 'error';
       this.error = error.response?.data?.error?.message || 'Signup failed';
-      this.rootStore.ui.showToast('error', 'Signup failed', this.error);
+      this.rootStore.ui.showToast('error', 'Signup failed', this.error || 'Signup failed');
       throw error;
     }
-  }
+  });
 
   /**
    * Check if user has valid session
    */
-  async checkSession() {
+  checkSession = action(async () => {
     try {
       this.status = 'loading';
       this.error = null;
@@ -69,12 +69,12 @@ export class AuthStore {
       this.status = 'idle'; // Not an error state for invalid sessions
       this.user = null;
     }
-  }
+  });
 
   /**
    * Logout current user
    */
-  async logout() {
+  logout = action(async () => {
     try {
       await authApi.logout();
       this.user = null;
@@ -88,7 +88,7 @@ export class AuthStore {
       this.status = 'idle';
       this.error = null;
     }
-  }
+  });
 
   get isAuthenticated() {
     return !!this.user;

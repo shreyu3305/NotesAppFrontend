@@ -12,7 +12,10 @@ import { NoteCreate } from '../pages/NoteCreate';
 const PrivateRoute = observer(({ children }: { children: React.ReactNode }) => {
   const { auth } = rootStore;
   
-  if (!auth.isAuthenticated) {
+  // Check if user has a token in localStorage
+  const hasToken = localStorage.getItem('auth_token');
+  
+  if (!hasToken || !auth.isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
   
@@ -22,7 +25,10 @@ const PrivateRoute = observer(({ children }: { children: React.ReactNode }) => {
 const PublicRoute = observer(({ children }: { children: React.ReactNode }) => {
   const { auth } = rootStore;
   
-  if (auth.isAuthenticated) {
+  // Check if user has a token in localStorage
+  const hasToken = localStorage.getItem('auth_token');
+  
+  if (hasToken && auth.isAuthenticated) {
     return <Navigate to="/notes" replace />;
   }
   

@@ -9,24 +9,9 @@ interface ProvidersProps {
 }
 
 const AppInitializer: React.FC<{ children: React.ReactNode }> = observer(({ children }) => {
-  const { auth } = rootStore;
-
-  useEffect(() => {
-    auth.checkSession();
-  }, [auth]);
-
-  // Show loading during initial session check
-  if (auth.status === 'loading') {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <Spinner className="h-8 w-8 mb-4 mx-auto" />
-          <p className="text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
+  // Remove automatic session check to prevent continuous refreshing
+  // Users will be redirected to login if not authenticated when they try to access protected routes
+  
   return <>{children}</>;
 });
 

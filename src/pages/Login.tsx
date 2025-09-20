@@ -12,8 +12,8 @@ export const Login: React.FC = observer(() => {
   const navigate = useNavigate();
   
   const [formData, setFormData] = useState({
-    email: 'demo@example.com',
-    password: 'password123',
+    email: '',
+    password: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -103,14 +103,6 @@ export const Login: React.FC = observer(() => {
               <Link to="/signup" className="text-blue-600 hover:text-blue-700 font-medium">
                 Sign up
               </Link>
-            </p>
-          </div>
-          
-          <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-            <p className="text-xs text-blue-800">
-              <strong>Demo credentials:</strong><br />
-              Email: demo@example.com<br />
-              Password: password123
             </p>
           </div>
         </div>
