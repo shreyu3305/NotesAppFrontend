@@ -1,5 +1,5 @@
 // HTTP client using native fetch API
-const API_BASE_URL = 'http://localhost:5000/api/v1';
+const API_BASE_URL = 'https://notesappbackend-zgkl.onrender.com/api/v1';
 
 // Helper function to get auth token
 const getAuthToken = (): string | null => {
