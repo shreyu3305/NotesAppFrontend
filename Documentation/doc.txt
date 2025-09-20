@@ -1,0 +1,523 @@
+# React + TypeScript + MobX (Frontend) · Node.js + Express + TypeScript (Backend) · MongoDB
+
+**Purpose:** A small full‑stack app demonstrating secure auth, CRUD on a simple entity ("Notes"), shared validation, clean React architecture with MobX, and basic tests. This document is your build guide + rationale + README template.
+
+---
+
+## 0) TL;DR Project Snapshot
+
+* **Entity:** `Note { _id, title, body, tags, createdAt, updatedAt, ownerId }`
+* **Auth:** Email/password using **JWT** (access + refresh), HTTP‑only cookies for refresh, rotating tokens, password hashing with bcrypt.
+* **Validation:** **Zod** schemas shared across FE/BE via a `/packages/shared` workspace.
+* **State:** MobX stores (`AuthStore`, `NotesStore`, `UiStore`).
+* **API style:** REST, JSON, versioned under `/api/v1`.
+* **Tests:** Backend (Jest + Supertest), Frontend (Vitest + React Testing Library).
+* **Tooling:** ESLint, Prettier, pnpm workspaces, Husky + lint‑staged.
+* **Deployment:** Railway, Firebase, MongoDB Atlas.
+
+---
+
+## 1) System Architecture
+
+```
+apps/
+  web/            # React + TS + Vite + MobX
+  server/         # Node + Express + TS
+packages/
+  shared/         # Zod schemas, types, constants shared FE/BE
+
+infra/
+  docker/         # optional Dockerfiles + compose for local
+  scripts/        # seed scripts, DB migrations (if any)
+
+.eslintrc.js
+.prettierrc
+pnpm-workspace.yaml
+README.md
+```
+
+**Flow:**
+
+1. React client authenticates via POST `/auth/login` → server issues **access token (JWT)** + **refresh token (httpOnly cookie)**.
+2. Client stores access token in memory (MobX store). Refresh token never touches JS; server rotates it via `/auth/refresh` when access expires.
+3. CRUD on `/notes` requires `Authorization: Bearer <accessToken>`.
+
+**Why this design:**
+
+* Clear separation of concerns; shared types eliminate drift.
+* Cookies for refresh mitigate XSS risk; short‑lived access token reduces replay risk.
+
+---
+
+## 2) Data Model (MongoDB + Mongoose)
+
+**Collections**
+
+* **users**: `{ _id, email (unique), passwordHash, name, createdAt, updatedAt }`
+* **notes**: `{ _id, ownerId (ObjectId→users), title, body, tags: string[], createdAt, updatedAt }`
+* **refreshTokens** (optional if using stateless rotation + blacklist): `{ tokenHash, userId, expiresAt, createdAt }`
+
+**Indexes**
+
+* `users.email` unique
+* `notes.ownerId` + `notes.updatedAt` compound for efficient listing
+
+---
+
+## 3) Shared Validation + Types (packages/shared)
+
+Use **Zod** to define request/response contracts once and import into both FE and BE.
+
+```ts
+// packages/shared/src/schemas.ts
+import { z } from 'zod';
+export const SignUpSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+  name: z.string().min(1),
+});
+export const LoginSchema = z.object({ email: z.string().email(), password: z.string().min(8) });
+export const NoteCreateSchema = z.object({
+  title: z.string().min(1).max(120),
+  body: z.string().min(1),
+  tags: z.array(z.string()).max(10).optional().default([]),
+});
+export const NoteUpdateSchema = NoteCreateSchema.partial();
+export type SignUpInput = z.infer<typeof SignUpSchema>;
+export type LoginInput = z.infer<typeof LoginSchema>;
+export type Note = z.infer<typeof NoteCreateSchema> & { _id: string; ownerId: string; createdAt: string; updatedAt: string };
+```
+
+---
+
+## 4) API Specification (REST)
+
+Base URL: `/api/v1`
+
+### Auth
+
+* `POST /auth/signup`
+  **Body:** `SignUpSchema`
+  **201 →** `{ user: { _id, email, name }, accessToken }` + sets `refreshToken` httpOnly cookie.
+* `POST /auth/login`
+  **Body:** `LoginSchema`
+  **200 →** `{ user, accessToken }` + sets `refreshToken` cookie.
+* `POST /auth/refresh`
+  **Cookie:** `refreshToken`
+  **200 →** `{ accessToken }` (rotates refresh cookie)
+* `POST /auth/logout`
+  Clears refresh cookie; optional server‑side revoke.
+
+### Notes (requires `Authorization: Bearer <access>`)
+
+* `GET /notes?query=&tag=&page=1&limit=20` → `{ items: Note[], page, total }`
+* `GET /notes/:id` → `Note`
+* `POST /notes` **Body:** `NoteCreateSchema` → `201 Note`
+* `PATCH /notes/:id` **Body:** `NoteUpdateSchema` → `200 Note`
+* `DELETE /notes/:id` → `204`
+
+**Errors** (consistent shape)
+
+```json
+{ "error": { "code": "VALIDATION_ERROR", "message": "title is required", "fields": { "title": "required" } } }
+```
+
+---
+
+## 5) Backend Design (apps/server)
+
+**Tech:** Express, TypeScript, Mongoose, Zod, bcrypt, jsonwebtoken, cookie‑parser, helmet, cors.
+
+**Structure**
+
+```
+src/
+  app.ts              # express init, middlewares
+  server.ts           # createServer + listen
+  config/env.ts       # env parsing (zod)
+  db/mongoose.ts      # connect/disconnect logic
+  modules/
+    auth/
+      controller.ts
+      service.ts
+      routes.ts
+      tokens.ts       # sign/verify/rotate
+    users/
+      model.ts
+      repo.ts
+    notes/
+      model.ts
+      repo.ts
+      controller.ts
+      routes.ts
+  middlewares/
+    authGuard.ts      # verify access token
+    error.ts          # central error handler -> {error:{...}}
+  utils/
+    logger.ts
+    asyncHandler.ts
+  tests/              # jest + supertest specs
+```
+
+**Key Middleware**
+
+* `helmet()` + `cors({ origin: FE_ORIGIN, credentials: true })`
+* `cookieParser()`
+* `express.json({ limit: '1mb' })`
+* Central **error handler** mapping Zod + Mongoose errors to a unified response.
+
+**Auth Flow (Access+Refresh)**
+
+1. On login/signup: create short‑lived **access** (e.g., 10m) and longer **refresh** (7d).
+2. Store refresh token **only** in httpOnly, `Secure`, `SameSite=Lax` cookie.
+3. `/auth/refresh` verifies refresh token + rotation (invalidate old; issue new).
+4. Access token is sent in `Authorization` header; not persisted in localStorage (store in memory in the app).
+
+**Security Notes**
+
+* Hash passwords with `bcrypt(12-14 rounds)`.
+* On logout: clear cookie and (if using DB) mark refresh token as revoked.
+* Use `rate-limit` on `/auth/*` endpoints.
+
+---
+
+## 6) Frontend Design (apps/web)
+
+**Tech:** React 18, TypeScript, Vite, MobX, React Router, Axios (or `fetch`), Zod for client‑side validation, Tailwind or CSS Modules.
+
+**Structure**
+
+```
+src/
+  main.tsx
+  app/
+    router.tsx
+    providers.tsx
+    layout/
+      AppLayout.tsx
+  stores/
+    AuthStore.ts
+    NotesStore.ts
+    UiStore.ts
+    rootStore.ts       # instantiate + context
+  api/
+    http.ts            # axios instance with interceptors
+    authApi.ts
+    notesApi.ts
+  components/
+    forms/
+      TextField.tsx
+      TextArea.tsx
+      FormError.tsx
+    notes/
+      NoteCard.tsx
+      NoteList.tsx
+      NoteEditor.tsx
+    common/
+      Button.tsx
+      Spinner.tsx
+      EmptyState.tsx
+  pages/
+    Login.tsx
+    Signup.tsx
+    NotesList.tsx
+    NoteDetail.tsx
+    NoteCreate.tsx
+  validation/
+    mappers.ts         # map zod issues -> UI friendly
+  hooks/
+    useStore.ts        # MobX context hook
+  styles/
+    index.css
+```
+
+**MobX Stores**
+
+* `AuthStore`: `user`, `accessToken`, `status`, actions: `login`, `logout`, `signup`, `refresh`.
+* `NotesStore`: `items`, `selected`, pagination state, actions: `fetchList`, `create`, `update`, `remove`.
+* `UiStore`: global loading flags, toasts, modal state.
+
+**HTTP Client**
+
+* Axios instance with `withCredentials=true` for cookie on refresh; response interceptor to auto‑refresh on 401 once, then retry.
+
+**Routing**
+
+* PrivateRoute guard reads `AuthStore.user`; fallback to `/login`.
+
+**Form Validation**
+
+* Use Zod schemas from `packages/shared`; `parse` before API call; display field errors via `FormError`.
+
+**UX Notes**
+
+* Optimistic updates on create/update/delete with rollback on failure.
+* Empty states and skeleton loaders.
+
+---
+
+## 7) Unit & Integration Tests
+
+### Backend (Jest + Supertest)
+
+* **Auth:** signup/login happy path + invalid creds, refresh rotation, protected route 401/200.
+* **Notes:** CRUD with auth; 403 when accessing note of another user.
+* Use in‑memory MongoDB (`mongodb-memory-server`).
+
+### Frontend (Vitest + RTL)
+
+* **AuthStore:** `login` updates `user`, handles 401 + refresh.
+* **Notes flows:** render list, create via form (validate client + server error rendering).
+* **Components:** `NoteEditor` required fields show errors.
+
+**Coverage goal:** \~60–70% statements on server; a few key FE paths.
+
+---
+
+## 8) Developer Experience & Quality
+
+* **ESLint:** `@typescript-eslint`, `eslint-plugin-react`, `eslint-plugin-import`.
+* **Prettier:** width 100, semi true, singleQuote true.
+* **Commit style:** Conventional Commits (`feat:`, `fix:`, `docs:`…).
+* **Husky + lint-staged:** run lint & typecheck on staged files.
+* **Env typing:** `env.ts` validates required vars with Zod at boot.
+
+---
+
+## 9) Environment & Configuration
+
+### .env (server)
+
+```
+PORT=4000
+MONGO_URI=mongodb+srv://...
+JWT_ACCESS_SECRET=...
+JWT_REFRESH_SECRET=...
+ACCESS_TTL=10m
+REFRESH_TTL=7d
+CORS_ORIGIN=http://localhost:5173
+COOKIE_DOMAIN=localhost
+NODE_ENV=development
+```
+
+### .env (web)
+
+```
+VITE_API_BASE=http://localhost:4000/api/v1
+```
+
+---
+
+## 10) Setup & Run (README‑ready)
+
+### Prereqs
+
+* Node 20+, pnpm 9+, MongoDB Atlas or local
+
+### Install
+
+```bash
+pnpm i
+```
+
+### Dev (two terminals)
+
+```bash
+pnpm --filter server dev
+pnpm --filter web dev
+```
+
+### Test
+
+```bash
+pnpm --filter server test
+pnpm --filter web test
+```
+
+### Build
+
+```bash
+pnpm -r build
+```
+
+---
+
+## 11) API Error Contract & Handling
+
+**Shape**
+
+```ts
+interface ApiError {
+  error: { code: string; message: string; fields?: Record<string, string> };
+}
+```
+
+**Codes**: `VALIDATION_ERROR`, `AUTH_INVALID`, `AUTH_EXPIRED`, `NOT_FOUND`, `FORBIDDEN`, `RATE_LIMITED`, `INTERNAL`.
+
+Front‑end maps `fields` to inline form messages; unknown codes show a toast.
+
+---
+
+## 12) Security & Compliance Checklist
+
+* [ ] HTTPS everywhere (prod).
+* [ ] `helmet`, `cors` (exact origin), `rate-limit` on auth.
+* [ ] bcrypt salt rounds ≥ 12.
+* [ ] Refresh tokens httpOnly + Secure + SameSite=Lax.
+* [ ] Access token TTL ≤ 15m.
+* [ ] No tokens in localStorage; access stored in memory only.
+* [ ] Validate all inputs (Zod) both FE & BE.
+* [ ] Centralized error responses (no stack leaks in prod).
+* [ ] Mongo indexes created and checked in.
+* [ ] Secrets via env; never committed.
+
+---
+
+## 13) Clean React Component Structure
+
+* **Presentational vs Container**: Keep `pages/*` minimal; business logic in stores.
+* **Reusable form fields**: `TextField`, `TextArea`, `Select` with error slot.
+* **Accessibility**: label/aria‑describedby, keyboard focus rings.
+* **Styling**: Tailwind or CSS Modules; avoid inline styles for consistency.
+
+---
+
+## 14) Minimal UI Scope (MVP)
+
+* **Auth**: Login, Signup, Logout button in header, Protected routes.
+* **Notes**: List (search by title, tag filter), Create/Edit modal, Delete with confirm.
+* **Feedback**: Toasts for success/error, skeletons on loading, empty state.
+
+---
+
+## 15) Example Sequences
+
+**Login**
+
+1. User submits email/password → FE validates with `LoginSchema`.
+2. BE verifies password → returns `{ user, accessToken }` and sets refresh cookie.
+3. FE stores `accessToken` in `AuthStore` memory; routes to `/notes`.
+
+**Access token expiry during API call**
+
+1. 401 received → Axios interceptor calls `/auth/refresh` with cookie.
+2. On 200, update `accessToken`, retry original request once.
+3. If refresh fails, logout and redirect to `/login`.
+
+---
+
+## 16) Example Test Matrix
+
+| Area  | Test                                        | Tool      |
+| ----- | ------------------------------------------- | --------- |
+| Auth  | signup invalid email → 400                  | Supertest |
+| Auth  | login ok → returns access + sets cookie     | Supertest |
+| Notes | cannot CRUD without auth → 401              | Supertest |
+| Notes | create note & list paginated                | Supertest |
+| FE    | AuthStore.login happy/invalid               | Vitest    |
+| FE    | NoteEditor client validation renders errors | RTL       |
+| FE    | List renders skeleton then items            | RTL       |
+
+---
+
+## 17) Deployment
+
+**Backend**
+
+* Render/Fly/Heroku with `PORT` provided; set envs and allow cookies.
+* Use MongoDB Atlas; IP allowlist or VPC peering.
+
+**Frontend**
+
+* Vercel/Netlify; set `VITE_API_BASE` to the deployed API.
+* Ensure CORS `origin` matches FE domain, cookies `domain` set to API host (or parent) with `Secure`.
+
+**Domain/HTTPS**
+
+* Use custom domains, force HTTPS, HSTS.
+
+---
+
+## 18) README.md Template (paste into repo root)
+
+```md
+# Notes App — React + MobX + Node + Mongo
+
+A small full‑stack app with JWT auth, CRUD for notes, shared validation via Zod, and tests.
+
+## Tech Stack
+- Frontend: React 18, TypeScript, MobX, Vite
+- Backend: Node.js, Express, TypeScript, Mongoose
+- DB: MongoDB Atlas
+- Validation: Zod (shared in a workspace package)
+
+## Quick Start
+1. Clone & install: `pnpm i`
+2. Create `.env` files (see **Environment** below).
+3. Dev:
+   - `pnpm --filter server dev`
+   - `pnpm --filter web dev`
+4. Visit `http://localhost:5173`
+
+## Environment
+- **server/.env**
+  - `PORT`, `MONGO_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ACCESS_TTL`, `REFRESH_TTL`, `CORS_ORIGIN`, `COOKIE_DOMAIN`
+- **web/.env**
+  - `VITE_API_BASE`
+
+## Scripts
+- `pnpm --filter server dev|build|start|test|lint`
+- `pnpm --filter web dev|build|preview|test|lint`
+
+## API
+See `/docs/API.md` or section in technical docs. Base: `/api/v1`.
+
+## Testing
+- Server: Jest + Supertest + mongodb‑memory‑server
+- Web: Vitest + React Testing Library
+
+## License
+MIT
+```
+
+---
+
+## 19) “Why MobX?” Interview Notes
+
+* Minimal boilerplate, observable state fits form-heavy CRUD.
+* Computed values (e.g., filtered notes) are trivial.
+* Fine‑grained reactions reduce unnecessary renders vs naive Redux.
+
+---
+
+## 20) Nice‑to‑Have (if time remains)
+
+* Search debouncing + URL‑synced filters.
+* E2E smoke via Playwright (login + create note).
+* Dark mode + accessible color contrast.
+* Audit: `pnpm dlx lighthouse-badges` for perf snapshot.
+
+---
+
+## 21) Risks & Mitigations
+
+* **Token leakage**: Never store tokens in localStorage; access in memory only; refresh in httpOnly cookie.
+* **Validation drift**: Single source of truth in `packages/shared`.
+* **CORS/cookies issues**: Ensure `withCredentials=true` + exact origin + `Secure` in prod.
+
+---
+
+## 22) Review Checklist (pre‑submission)
+
+* [ ] README covers install/run/test.
+* [ ] `shared` schemas referenced in both FE & BE.
+* [ ] At least 4–6 tests passing.
+* [ ] Lint/typecheck clean.
+* [ ] Demo user seeded or signup route open.
+* [ ] Screens: Login, Signup, Notes List, Note Editor.
+* [ ] Error + empty states present.
+* [ ] Git history with meaningful commits.
+
+---
+
+**End of Document**
