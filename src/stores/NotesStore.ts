@@ -32,7 +32,7 @@ export class NotesStore {
       const response = await notesApi.list(this.page, this.pageSize, this.query, this.tagFilters);
       
       runInAction(() => {
-        this.items = response.notes;
+        this.items = response.items; // Changed from response.notes to response.items
         this.total = response.total;
         this.status = 'idle';
       });

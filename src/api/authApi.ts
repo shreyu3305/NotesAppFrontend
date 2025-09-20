@@ -1,76 +1,54 @@
 import { api } from './http';
-import { User, ApiError } from '../shared/schemas';
-
-// Mock user data
-const mockUser: User = {
-  _id: 'user1',
-  email: 'demo@example.com',
-  name: 'Demo User',
-};
-
-const mockToken = 'mock-jwt-token-12345';
-
-// Simulate network delay
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { User, AuthResponse } from '../shared/schemas';
 
 export const authApi = {
-  async login(email: string, password: string): Promise<{ user: User; token: string }> {
-    await delay(300);
+  async login(email: string, password: string): Promise<{ user: User; accessToken: string }> {
+    const response: AuthResponse = await api.post('/auth/login', { email, password });
     
-    // Mock validation
-    if (email === 'demo@example.com' && password === 'password123') {
-      localStorage.setItem('auth_token', mockToken);
-      return { user: mockUser, token: mockToken };
-    }
+    // Store access token in localStorage
+    localStorage.setItem('auth_token', response.accessToken);
     
-    throw {
-      response: {
-        data: {
-          error: {
-            code: 'INVALID_CREDENTIALS',
-            message: 'Invalid email or password',
-          }
-        }
-      }
+    return {
+      user: response.user,
+      accessToken: response.accessToken
     };
   },
 
-  async signup(name: string, email: string, password: string): Promise<{ user: User; token: string }> {
-    await delay(400);
+  async signup(name: string, email: string, password: string): Promise<{ user: User; accessToken: string }> {
+    const response: AuthResponse = await api.post('/auth/signup', { name, email, password });
     
-    // Mock user creation
-    const newUser: User = {
-      _id: 'user_' + Date.now(),
-      email,
-      name,
+    // Store access token in localStorage
+    localStorage.setItem('auth_token', response.accessToken);
+    
+    return {
+      user: response.user,
+      accessToken: response.accessToken
     };
-    
-    localStorage.setItem('auth_token', mockToken);
-    return { user: newUser, token: mockToken };
   },
 
   async checkSession(): Promise<{ user: User }> {
-    await delay(200);
-    
-    const token = localStorage.getItem('auth_token');
-    if (!token) {
-      throw {
-        response: {
-          data: {
-            error: {
-              code: 'NO_SESSION',
-              message: 'No valid session found',
-            }
-          }
-        }
-      };
-    }
-    
-    return { user: mockUser };
+    const response = await api.get('/auth/me');
+    return { user: response.user };
   },
 
   async logout(): Promise<void> {
-    await delay(100);
-    localStorage.removeItem('auth_token');
+    try {
+      await api.post('/auth/logout');
+    } catch (error) {
+      // Continue with logout even if API call fails
+      console.warn('Logout API call failed:', error);
+    } finally {
+      // Always clear local storage
+      localStorage.removeItem('auth_token');
+    }
+  },
+
+  async refreshToken(): Promise<{ accessToken: string }> {
+    const response = await api.post('/auth/refresh');
+    
+    // Update stored access token
+    localStorage.setItem('auth_token', response.accessToken);
+    
+    return { accessToken: response.accessToken };
   },
 };
